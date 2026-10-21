@@ -1,0 +1,68 @@
+# Adobooru auto-tagging policy.
+#
+# Generated tags are merged with the mandatory tags below, filtered through
+# `blocked`, rewritten through `aliases`, and finally truncated to
+# `tags.max_count`.  Mandatory tags are never dropped by the cap.
+#
+# Reloaded on every process start; restart the orchestrator after editing.
+
+model:
+  # WD14 ConvNeXtV2 ONNX checkpoint.  The model + CSV are downloaded into
+  # ADOBORU_DATA_DIR/models on first use (~1 GB total).
+  repo: SmilingWolf/wd-v1-4-convnextv2-tagger-v2
+  file: model.onnx
+  tags_file: selected_tags.csv
+  providers:
+    - CPUExecutionProvider
+
+thresholds:
+  # Tags produced by the general sigmoid head.
+  general: 0.35
+  # Character tags are rarer and noisier; require more confidence.
+  character: 0.72
+  # Confidence needed before the rating head overrides the fallback safety.
+  rating: 0.45
+
+tags:
+  # Always applied.  Ado artwork archive defaults.
+  default:
+    - ado
+    - singer
+    - virtual_youtuber
+
+  # Applied per ingestion source.
+  by_source:
+    twitter:
+      - source:twitter
+    danbooru:
+      - source:danbooru
+
+  # Additional tags forced onto every post (CLI/API extras are separate).
+  force: []
+
+  # Keep the post's tag list sane; Szurubooru handles far more, but a 500-tag
+  # post is not useful for browsing.
+  max_count: 50
+
+  include_character: true
+
+  # WD14 noise that adds no browsing value on a single-artist booru.
+  blocked:
+    - commentary_request
+    - artist_name
+    - web_address
+    - twitter_username
+    - signature
+    - watermark
+
+  # Normalise Danbooru/WD14 spellings that refer to the same concept.
+  aliases:
+    ado_(utaitor): ado
+    ado_(utaite): ado
+
+safety:
+  # X/Twitter posts have no rating.  Use the WD14 rating head; when its best
+  # guess is below `thresholds.rating`, use `fallback` (which is deliberately
+  # not "safe" so borderline media can be reviewed).
+  derive_from_tagger: true
+  fallback: sketchy

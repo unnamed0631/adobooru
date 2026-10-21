@@ -1,0 +1,135 @@
+name: ${COMPOSE_PROJECT_NAME:-adobooru}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ------------------------------------------------------------------------
+  # Szurubooru core
+  # ------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-szurubooru}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-szurubooru}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
+  # Szurubooru itself does not use Redis.  It backs the orchestrator's
+  # cross-replica job locks and keeps the stack ready for additional workers.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
+  szurubooru-server:
+    image: szurubooru/server:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-szurubooru}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-szurubooru}
+      THREADS: ${SZURU_THREADS:-4}
+      LOG_SQL: ${SZURU_LOG_SQL:-0}
+    volumes:
+      - szurubooru-data:/data
+      - ./config/szurubooru-server.yaml:/opt/app/config.yaml:ro
+    ports:
+      # REST API, as required by the orchestrator and any external clients.
+      - "${SZURU_API_PORT:-6666}:6666"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "python3 -c \"import urllib.request as u; r=u.Request('http://127.0.0.1:6666/api/posts/?limit=1', headers={'Accept':'application/json'}); u.urlopen(r, timeout=3)\""
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    logging: *default-logging
+
+  szurubooru-client:
+    image: szurubooru/client:latest
+    restart: unless-stopped
+    depends_on:
+      szurubooru-server:
+        condition: service_healthy
+    environment:
+      # The client's nginx proxies /api/* and serves /data/* from the shared
+      # volume.  These two env vars are the official configuration surface.
+      BACKEND_HOST: szurubooru-server
+      BASE_URL: ${SZURU_BASE_URL:-}
+    volumes:
+      - szurubooru-data:/data:ro
+    ports:
+      - "${SZURU_WEB_PORT:-8080}:80"
+    logging: *default-logging
+
+  # ------------------------------------------------------------------------
+  # Ingestion scheduler + orchestration API
+  # ------------------------------------------------------------------------
+  orchestrator:
+    build:
+      context: ./orchestrator
+      args:
+        WITH_PLAYWRIGHT: ${WITH_PLAYWRIGHT:-false}
+    image: adobooru/orchestrator:latest
+    restart: unless-stopped
+    depends_on:
+      szurubooru-server:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Container-internal endpoints override whatever is in .env so the same
+      # file keeps working for host-side CLI runs.
+      ADOBORU_DATA_DIR: /var/lib/adobooru
+      SZURU_API_URL: http://szurubooru-server:6666
+      SZURU_CONTENT_BASE_URL: http://szurubooru-client/
+      TAGGING_POLICY: /etc/adobooru/tagging.yaml
+      TWITTER_COOKIES: /secrets/cookies.txt
+      REDIS_URL: redis://redis:6379/0
+      ORCHESTRATOR_HOST: 0.0.0.0
+      ORCHESTRATOR_PORT: "8081"
+    volumes:
+      - orchestrator-data:/var/lib/adobooru
+      - ./config/tagging.yaml:/etc/adobooru/tagging.yaml:ro
+      - ./secrets:/secrets:ro
+    ports:
+      # Bound to loopback on purpose; put it behind your reverse proxy if the
+      # API should be reachable remotely, and set ORCHESTRATOR_API_KEY.
+      - "127.0.0.1:${ORCHESTRATOR_PORT:-8081}:8081"
+    command: ["serve"]
+    stop_grace_period: 30s
+    logging: *default-logging
+
+volumes:
+  postgres-data:
+  szurubooru-data:
+  redis-data:
+  orchestrator-data:
