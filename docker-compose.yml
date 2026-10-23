@@ -64,7 +64,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - "python3 -c \"import urllib.request as u; r=u.Request('http://127.0.0.1:6666/api/posts/?limit=1', headers={'Accept':'application/json'}); u.urlopen(r, timeout=3)\""
+        - "python3 -c \"import urllib.request as u; r=u.Request('http://127.0.0.1:6666/posts/?limit=1', headers={'Accept':'application/json'}); u.urlopen(r, timeout=3)\""
       interval: 15s
       timeout: 5s
       retries: 12
@@ -109,7 +109,7 @@ services:
       # Container-internal endpoints override whatever is in .env so the same
       # file keeps working for host-side CLI runs.
       ADOBORU_DATA_DIR: /var/lib/adobooru
-      SZURU_API_URL: http://szurubooru-server:6666
+      SZURU_API_URL: http://szurubooru-client
       SZURU_CONTENT_BASE_URL: http://szurubooru-client/
       TAGGING_POLICY: /etc/adobooru/tagging.yaml
       TWITTER_COOKIES: /secrets/cookies.txt
@@ -124,7 +124,7 @@ services:
       # Bound to loopback on purpose; put it behind your reverse proxy if the
       # API should be reachable remotely, and set ORCHESTRATOR_API_KEY.
       - "127.0.0.1:${ORCHESTRATOR_PORT:-8081}:8081"
-    command: ["serve"]
+    command: ["python", "ingest_orchestrator.py", "serve"]
     stop_grace_period: 30s
     logging: *default-logging
 

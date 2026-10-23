@@ -31,6 +31,7 @@ RUN if [ "$WITH_PLAYWRIGHT" = "true" ]; then \
     fi
 
 COPY ingest_orchestrator.py ./
+COPY adobooru ./adobooru
 
 RUN useradd --create-home --uid 1000 app \
     && mkdir -p /var/lib/adobooru \

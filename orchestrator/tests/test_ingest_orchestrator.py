@@ -165,6 +165,33 @@ def test_supplied_safety_wins_over_tagger() -> None:
     assert plan.safety == "safe"
 
 
+def test_nsfw_source_is_skipped_before_download() -> None:
+    settings = SimpleNamespace(allowed_safety=("safe",))
+
+    class ExplodingStore:
+        def find(self, **_kwargs: Any) -> Any:
+            raise AssertionError("dedupe lookup should not run for NSFW media")
+
+    pipeline = ingest.IngestPipeline(
+        settings,  # type: ignore[arg-type]
+        policy=ingest.TagPolicy(),
+        http=SimpleNamespace(),
+        client=SimpleNamespace(),
+        store=ExplodingStore(),
+        tagger=SimpleNamespace(),
+    )
+    candidate = ingest.MediaCandidate(
+        origin="danbooru",
+        origin_key="danbooru:1",
+        media_url="https://example.test/nsfw.jpg",
+        source_url="https://example.test/post/1",
+        safety="sketchy",
+    )
+    with pytest.raises(ingest.SkipMedia) as excinfo:
+        pipeline.process(candidate)
+    assert excinfo.value.reason is ingest.SkipReason.SAFETY
+
+
 def test_derive_safety_threshold() -> None:
     policy = ingest.TagPolicy(rating_threshold=0.5)
     confident = ingest.TaggerPrediction(
@@ -487,6 +514,19 @@ def test_danbooru_candidate_from_post() -> None:
         "ado_(utaitor)",
     )
 
+    pximg_post = {
+        **post,
+        "source": (
+            "https://i.pximg.net/img-original/img/2023/09/06/21/44/02/"
+            "111499997_p0.jpg"
+        ),
+    }
+    pximg_candidate = ingest.danbooru_candidate_from_post(
+        pximg_post, base_url="https://danbooru.donmai.us"
+    )
+    assert pximg_candidate is not None
+    assert pximg_candidate.source_url == "https://www.pixiv.net/artworks/111499997"
+
     assert (
         ingest.danbooru_candidate_from_post(
             {**post, "file_url": None},
@@ -514,6 +554,49 @@ def test_danbooru_candidate_from_post() -> None:
     )
     assert asset_candidate is not None
     assert asset_candidate.media_url == "https://cdn.example/full.png"
+
+
+def test_danbooru_cursor_walks_backwards(tmp_path: Path) -> None:
+    settings: Any = SimpleNamespace(
+        danbooru_query="ado_(utaite)",
+        danbooru_base_url="https://danbooru.donmai.us",
+        danbooru_login="",
+        danbooru_api_key="",
+    )
+
+    def post(post_id: int) -> dict[str, Any]:
+        return {
+            "id": post_id,
+            "rating": "g",
+            "file_url": f"/data/{post_id}.jpg",
+            "tag_string_general": "ado",
+        }
+
+    store = ingest.DanbooruCursorStore(tmp_path / "cursor.json")
+    http = FakeHttp([FakeResponse([post(10), post(9), post(8)])])
+    first = ingest.DanbooruSource(settings, http, cursor_store=store)
+    got = list(first.candidates(limit=2, max_pages=1))
+    assert [candidate.origin_key for candidate in got] == [
+        "danbooru:10",
+        "danbooru:9",
+    ]
+    assert http.calls[0][2]["params"]["tags"] == "ado_(utaite)"
+    cursor = store.load("ado_(utaite)")
+    assert (cursor.min_id, cursor.max_id) == (9, 10)
+
+    http2 = FakeHttp([FakeResponse([]), FakeResponse([post(8), post(7)])])
+    second = ingest.DanbooruSource(settings, http2, cursor_store=store)
+    got = list(second.candidates(limit=2, max_pages=1))
+    assert [candidate.origin_key for candidate in got] == [
+        "danbooru:8",
+        "danbooru:7",
+    ]
+    assert [call[2]["params"]["tags"] for call in http2.calls] == [
+        "ado_(utaite) id:>10",
+        "ado_(utaite) id:<9",
+    ]
+    cursor = store.load("ado_(utaite)")
+    assert (cursor.min_id, cursor.max_id) == (7, 10)
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +686,7 @@ def test_szurubooru_client_contract() -> None:
     assert kwargs["files"]["content"] == ("a.jpg", b"abc", "image/jpeg")
     assert kwargs["headers"]["Accept"] == "application/json"
     # base64("bot:secret")
-    assert kwargs["headers"]["Authorization"] == "Basic Ym90OnNlY3JldA=="
+    assert kwargs["headers"]["Authorization"] == "Token Ym90OnNlY3JldA=="
 
     method, url, kwargs = http.calls[1]
     assert method == "POST"
@@ -778,3 +861,94 @@ def test_orchestration_api(tmp_path: Path) -> None:
         started = client.post("/ingest/danbooru?limit=1", headers=headers)
         assert started.status_code == 202
         assert started.json()["source"] == "danbooru"
+
+
+# ---------------------------------------------------------------------------
+# Cookies
+# ---------------------------------------------------------------------------
+
+
+def test_load_json_cookies(tmp_path: Path) -> None:
+    path = tmp_path / "cookies.txt"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "auth_token",
+                    "value": "secret",
+                    "domain": ".x.com",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": True,
+                    "sameSite": "no_restriction",
+                    "session": False,
+                    "expirationDate": 1824186227.266,
+                },
+                {
+                    "name": "lang",
+                    "value": "en",
+                    "domain": "x.com",
+                    "path": "/",
+                    "session": True,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cookies = ingest.load_cookies(path)
+    assert len(cookies) == 2
+    assert cookies[0]["name"] == "auth_token"
+    assert cookies[0]["expires"] == pytest.approx(1824186227.266)
+    assert cookies[0]["httpOnly"] is True
+    assert cookies[0]["secure"] is True
+    assert cookies[0]["sameSite"] == "None"
+    assert cookies[1]["expires"] == -1.0
+    assert cookies[1]["sameSite"] == "Lax"
+
+
+def test_json_cookies_convert_to_netscape(tmp_path: Path) -> None:
+    path = tmp_path / "cookies.txt"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "auth_token",
+                    "value": "secret",
+                    "domain": ".x.com",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": True,
+                    "expirationDate": 1824186227.9,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with ingest.gallery_dl_cookie_file(path) as jar:
+        assert jar is not None
+        assert jar != path
+        text = jar.read_text(encoding="utf-8")
+        assert text.startswith("# Netscape HTTP Cookie File")
+        assert "#HttpOnly_.x.com\tTRUE\t/\tTRUE\t1824186227\tauth_token\tsecret" in text
+    assert not jar.exists()
+
+
+def test_netscape_cookies_still_load(tmp_path: Path) -> None:
+    path = tmp_path / "cookies.txt"
+    path.write_text(
+        "# Netscape HTTP Cookie File\n"
+        "#HttpOnly_.x.com\tTRUE\t/\tTRUE\t1824186227\tauth_token\tsecret\n",
+        encoding="utf-8",
+    )
+    assert ingest.load_cookies(path)[0] == {
+        "name": "auth_token",
+        "value": "secret",
+        "domain": ".x.com",
+        "path": "/",
+        "expires": 1824186227.0,
+        "httpOnly": True,
+        "secure": True,
+        "sameSite": "Lax",
+    }
+    with ingest.gallery_dl_cookie_file(path) as jar:
+        assert jar == path

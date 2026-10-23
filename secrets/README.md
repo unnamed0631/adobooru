@@ -1,7 +1,7 @@
 # X / Twitter cookies
 
 The X pipeline needs an authenticated browser session. Export your logged-in
-x.com cookies in **Netscape** format to:
+x.com cookies as **JSON** to:
 
 ```
 secrets/cookies.txt
@@ -10,18 +10,32 @@ secrets/cookies.txt
 Ways to do that:
 
 1. Sign in to x.com in a browser.
-2. Use a "cookies.txt" export extension (for example _Get cookies.txt
-   LOCALLY_ or _Open Cookies.txt_) and export for `x.com`.
+2. Use a cookie export extension that supports JSON (for example
+   _Cookie-Editor_ -> Export -> JSON, or _EditThisCookie_).
 3. Replace `secrets/cookies.txt` with the downloaded file.
 
-The file must start with a line like:
+The file should be a JSON array of cookie objects, for example:
 
-```
-# Netscape HTTP Cookie File
+```json
+[
+  {
+    "name": "auth_token",
+    "value": "...",
+    "domain": ".x.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "sameSite": "no_restriction",
+    "session": false,
+    "expirationDate": 1824186227.266
+  }
+]
 ```
 
-`gallery-dl` reads it directly; the Playwright fallback converts it to
-browser-context cookies (including `#HttpOnly_` entries).
+The Playwright fallback uses the JSON directly. Because `gallery-dl` only
+understands Netscape jars, the orchestrator converts the JSON to a
+short-lived Netscape file for each gallery-dl run. Legacy Netscape
+`cookies.txt` files are still accepted.
 
 ## Notes
 

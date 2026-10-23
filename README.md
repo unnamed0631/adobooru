@@ -1,3 +1,9 @@
+### commands
+
+```bash
+docker compose exec orchestrator python ingest_orchestrator.py danbooru --limit 200 --max-pages 5
+```
+
 # Adobooru
 
 A containerized, self-hosted booru plus an automated ingestion service for Ado
@@ -7,27 +13,29 @@ ConvNeXtV2 tagger over untagged media, de-duplicates by checksum and
 perceptual hash, and writes finished posts through Szurubooru's REST API.
 
 ```
-┌──────────────┐   ┌───────────────────────┐   ┌────────────────────┐
-│ Danbooru API │   │ X / Twitter           │   │ WD14 ONNX tagger   │
-│ /posts.json  │   │ gallery-dl/Playwright │   │ (local, CPU)       │
-└──────┬───────┘   └───────────┬───────────┘   └─────────┬──────────┘
-       │                       │                         │
-       └───────────────┬───────┴─────────────────────────┘
-                       ▼
-             ┌─────────────────────┐      ┌────────────────────┐
-             │ Orchestrator        │◄────►│ SQLite hash index  │
-             │ scheduler + FastAPI │      └────────────────────┘
-             └──────┬──────────────┘      ┌────────────────────┐
-                    │ REST :6666          │ Redis job locks    │
-                    ▼                     └────────────────────┘
-             ┌─────────────────────┐      ┌────────────────────┐
-             │ szurubooru-server   │─────►│ PostgreSQL         │
-             └──────┬──────────────┘      └────────────────────┘
-                    │ media volume
-                    ▼
-             ┌─────────────────────┐
-             │ szurubooru-client   │  http://localhost:8080
-             └─────────────────────┘
+
+┌──────────────┐ ┌───────────────────────┐ ┌────────────────────┐
+│ Danbooru API │ │ X / Twitter │ │ WD14 ONNX tagger │
+│ /posts.json │ │ gallery-dl/Playwright │ │ (local, CPU) │
+└──────┬───────┘ └───────────┬───────────┘ └─────────┬──────────┘
+│ │ │
+└───────────────┬───────┴─────────────────────────┘
+▼
+┌─────────────────────┐ ┌────────────────────┐
+│ Orchestrator │◄────►│ SQLite hash index │
+│ scheduler + FastAPI │ └────────────────────┘
+└──────┬──────────────┘ ┌────────────────────┐
+│ REST :6666 │ Redis job locks │
+▼ └────────────────────┘
+┌─────────────────────┐ ┌────────────────────┐
+│ szurubooru-server │─────►│ PostgreSQL │
+└──────┬──────────────┘ └────────────────────┘
+│ media volume
+▼
+┌─────────────────────┐
+│ szurubooru-client │ http://localhost:8080
+└─────────────────────┘
+
 ```
 
 ## Services
@@ -49,13 +57,18 @@ exists for the orchestrator's distributed job locks and future workers.
 
 - Queries `https://danbooru.donmai.us/posts.json` with `DANBOORU_QUERY`
   (`ado_(utaite)` by default), paginating up to `DANBOORU_MAX_PAGES`.
-  Note: the prompt's `ado_\(utaitor\)` spelling returns zero posts on
+  A persisted cursor (`data/state/danbooru_cursor.json`) first fetches posts
+  newer than the last run, then walks backwards with `id:<oldest`, so repeated
+  runs eventually cover the full archive instead of re-reading the newest
+  page. Note: the prompt's `ado_\(utaitor\)` spelling returns zero posts on
   Danbooru; the verified tag is `ado_(utaite)` (a copyright tag). Both are
   mapped to `ado` in `config/tagging.yaml`.
 - Skips deleted/banned posts and posts without a downloadable `file_url`
   (Danbooru returns `null` for content it will not serve anonymously).
 - Parses `rating` (`g`/`s`/`q`/`e`), the category-specific `tag_string_*`
-  fields, and the original `source` URL.
+  fields, and the original `source` URL. Direct `pximg.net` sources are
+  rewritten to `https://www.pixiv.net/artworks/<id>` because the Pixiv CDN
+  returns 403 without a pixiv.net Referer.
 - Downloads the bytes locally (for SHA-256, SHA-1 and pHash), uploads them
   through `POST /api/uploads/`, then creates the post with `contentToken`.
 - `DANBOORU_CONTENT_URL_MODE=true` instead sends `contentUrl` and lets
@@ -65,7 +78,8 @@ exists for the orchestrator's distributed job locks and future workers.
 ### X / Twitter pipeline
 
 - Runs `gallery-dl --dump-json` against each target (`#hashtag`, `@handle`,
-  bare handle or full URL) with a Netscape cookie jar.
+  bare handle or full URL) with a JSON cookie file (converted to Netscape
+  for gallery-dl automatically).
 - Rewrites `pbs.twimg.com/media/...` URLs to original quality
   (`?format=jpg&name=orig`), so thumbnails are never archived.
 - If gallery-dl fails or returns nothing, an optional Playwright fallback
@@ -86,6 +100,8 @@ local WD14 ONNX model (`SmilingWolf/wd-v1-4-convnextv2-tagger-v2` by default):
 - Character tags at `thresholds.character` (default `0.72`).
 - The rating head is used to derive `safe` / `sketchy` / `unsafe` when the
   source has no rating, with a configurable fallback (`sketchy` by default).
+  The default policy allows `safe` and `sketchy`; `unsafe` candidates are
+  skipped before upload.
 - Generated tags are merged with `default`, `by_source`, `force` and scraped
   tags, passed through `blocked`/`aliases`, then truncated to `max_count`.
   Mandatory tags are never dropped by the cap.
@@ -216,24 +232,24 @@ cron expressions in `.env` (`DANBOORU_CRON`, `TWITTER_CRON`).
 All orchestrator settings are environment variables; see `.env.example` for
 the full list. The most important ones:
 
-| Variable                                | Default                                  | Notes                                                        |
-| --------------------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
-| `SZURU_API_URL`                         | compose: `http://szurubooru-server:6666` | Host CLI default: `http://localhost:6666`                    |
-| `SZURU_USERNAME` / `SZURU_TOKEN`        | —                                        | HTTP Basic auth (`user:token`)                               |
-| `SZURU_SOURCE_LOOKUP`                   | `warn`                                   | `off`, `warn`, `skip`                                        |
-| `SZURU_SERVER_DEDUPE`                   | `true`                                   | SHA-1 lookup + server reverse search                         |
-| `DANBOORU_QUERY`                        | `ado_(utaite)`                           | Danbooru tag string (`ado_(utaitor)` is not a real tag)      |
-| `DANBOORU_LIMIT` / `DANBOORU_MAX_PAGES` | `40` / `2`                               | Per-run cap                                                  |
-| `DANBOORU_CONTENT_URL_MODE`             | `false`                                  | Server-side download, no hashes                              |
-| `TWITTER_TARGETS`                       | `https://x.com/hashtag/AdoArt?f=media`   | Comma-separated URLs/`#tags`/handles                         |
-| `TWITTER_LIMIT`                         | `50`                                     | Candidates per run                                           |
-| `TWITTER_COOKIES`                       | `./secrets/cookies.txt`                  | Netscape jar                                                 |
-| `TAGGER_ENABLED` / `TAGGER_REQUIRED`    | `true` / `false`                         | `REQUIRED` aborts X runs if the model fails                  |
-| `PHASH_THRESHOLD`                       | `5`                                      | Hamming distance; `0` only exact hashes, `<0` disables pHash |
-| `ALLOWED_SAFETY`                        | `safe,sketchy,unsafe`                    | Safety filter                                                |
-| `MAX_DOWNLOAD_MB`                       | `64`                                     | Keep in sync with `max_dl_filesize`                          |
-| `ORCHESTRATOR_API_KEY`                  | empty                                    | If set, required as `X-API-Key`                              |
-| `SCHEDULER_TIMEZONE`                    | `UTC`                                    | IANA timezone for cron                                       |
+| Variable                                | Default                                | Notes                                                          |
+| --------------------------------------- | -------------------------------------- | -------------------------------------------------------------- |
+| `SZURU_API_URL`                         | compose: `http://szurubooru-client`    | Host dev: `http://localhost:8080` (client nginx serves `/api`) |
+| `SZURU_USERNAME` / `SZURU_TOKEN`        | —                                      | API token (`Token user:token`, Basic fallback)                 |
+| `SZURU_SOURCE_LOOKUP`                   | `warn`                                 | `off`, `warn`, `skip`                                          |
+| `SZURU_SERVER_DEDUPE`                   | `true`                                 | SHA-1 lookup + server reverse search                           |
+| `DANBOORU_QUERY`                        | `ado_(utaite)`                         | Danbooru tag string (`ado_(utaitor)` is not a real tag)        |
+| `DANBOORU_LIMIT` / `DANBOORU_MAX_PAGES` | `40` / `2`                             | Per-run cap                                                    |
+| `DANBOORU_CONTENT_URL_MODE`             | `false`                                | Server-side download, no hashes                                |
+| `TWITTER_TARGETS`                       | `https://x.com/hashtag/AdoArt?f=media` | Comma-separated URLs/`#tags`/handles                           |
+| `TWITTER_LIMIT`                         | `50`                                   | Candidates per run                                             |
+| `TWITTER_COOKIES`                       | `./secrets/cookies.txt`                | JSON cookie export (Netscape also accepted)                    |
+| `TAGGER_ENABLED` / `TAGGER_REQUIRED`    | `true` / `false`                       | `REQUIRED` aborts X runs if the model fails                    |
+| `PHASH_THRESHOLD`                       | `5`                                    | Hamming distance; `0` only exact hashes, `<0` disables pHash   |
+| `ALLOWED_SAFETY`                        | `safe,sketchy`                         | `unsafe` is still blocked                                     |
+| `MAX_DOWNLOAD_MB`                       | `64`                                   | Keep in sync with `max_dl_filesize`                            |
+| `ORCHESTRATOR_API_KEY`                  | set in `.env`                          | Required as `X-API-Key` on non-health endpoints                |
+| `SCHEDULER_TIMEZONE`                    | `UTC`                                  | IANA timezone for cron                                         |
 
 ### `config/tagging.yaml`
 
@@ -290,21 +306,37 @@ docker compose exec orchestrator \
   python ingest_orchestrator.py tag /tmp/sample.jpg --json
 ```
 
-Host-side CLI:
+### Local (non-Docker) orchestrator
+
+Szurubooru stays in Docker, but the Python service runs from the repo so you
+can edit and debug it directly. Start only the dependencies:
 
 ```bash
+docker compose up -d postgres redis szurubooru-server szurubooru-client
 python -m venv .venv
 . .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r orchestrator/requirements.txt
-export SZURU_API_URL=http://localhost:6666
-# PowerShell: $env:SZURU_API_URL="http://localhost:6666"
 python orchestrator/ingest_orchestrator.py doctor
+python orchestrator/ingest_orchestrator.py serve
+```
+
+The API is then on <http://127.0.0.1:8081>. Run individual jobs in another
+shell with e.g. `python orchestrator/ingest_orchestrator.py danbooru --limit 10`.
+Use the host `data/` directory for the SQLite index, cursor and model; the
+compose volume can be copied with:
+
+```bash
+mkdir -p data
+docker run --rm -u "$(id -u):$(id -g)" \
+  -v adobooru_orchestrator-data:/src:ro -v "$PWD/data:/dst" \
+  alpine sh -c 'cp -a /src/. /dst/'
 ```
 
 ## Orchestration API
 
-Bound to `127.0.0.1:8081` in compose; set `ORCHESTRATOR_API_KEY` to require
-`X-API-Key` on all non-health endpoints.
+Bound to `127.0.0.1:8081` in compose. `ORCHESTRATOR_API_KEY` is required on
+all non-health endpoints (`X-API-Key`); generate one with
+`openssl rand -hex 32` before exposing the service through a tunnel or proxy.
 
 ```bash
 curl http://127.0.0.1:8081/healthz
