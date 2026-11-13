@@ -1,0 +1,40 @@
+# Szurubooru server configuration.
+#
+# Mounted read-only at /opt/app/config.yaml.  The Docker image merges this on
+# top of its own config.yaml.dist, so only overrides need to live here.
+# PostgreSQL connection details come from environment variables in
+# docker-compose.yml, not from this file.
+
+name: Adobooru
+domain: http://localhost:8080
+# CHANGE ME before exposing the instance.  This value salts password hashes
+# and is mixed into stored filenames; a guessable value weakens both.
+secret: CHANGE_ME_generate_with_openssl_rand_hex_32
+
+delete_source_files: false
+enable_safety: true
+allow_broken_uploads: false
+
+user_agent: Adobooru/1.0 (self-hosted booru)
+# Keep this in sync with MAX_DOWNLOAD_MB in .env.  Szurubooru rejects
+# server-side downloads (contentUrl mode) above this size.
+max_dl_filesize: 64.0E+6
+
+tag_name_regex: '^\S+$'
+default_rank: regular
+
+thumbnails:
+    post_width: 400
+    post_height: 400
+
+convert:
+    gif:
+        to_webm: false
+        to_mp4: false
+
+privileges:
+    # The orchestrator uploads bytes through /api/uploads/ by default, which
+    # only needs "uploads:create" (regular).  contentUrl mode lets the server
+    # download media itself, which normally requires "power"; relax it so a
+    # dedicated regular-rank ingest account can use both paths.
+    'uploads:use_downloader': regular

@@ -82,3 +82,12 @@ docker compose start redis orchestrator
 docker compose logs -f orchestrator
 curl http://127.0.0.1:8081/healthz
 ```
+
+## First-time setup
+
+Generate the local instance config (it contains the secret and is gitignored):
+
+```bash
+cp config/szurubooru-server.yaml.example config/szurubooru-server.yaml
+# set domain: to your public URL and secret: to `openssl rand -hex 32`
+```

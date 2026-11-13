@@ -14,3 +14,6 @@ venv/
 *.sqlite3-shm
 .DS_Store
 Thumbs.db
+
+# Local instance config (contains the live secret)
+config/szurubooru-server.yaml
