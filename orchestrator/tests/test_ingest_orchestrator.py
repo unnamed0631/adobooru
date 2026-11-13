@@ -488,6 +488,106 @@ def test_parse_gallery_dl_filters_videos() -> None:
     assert len(ingest.parse_gallery_dl_records(line, include_videos=True)) == 1
 
 
+def test_collect_twitter_media_maps_urls_to_tweet_permalinks() -> None:
+    payload = {
+        "data": {
+            "search_by_raw_query": {
+                "search_timeline": {
+                    "timeline": {
+                        "instructions": [
+                            {
+                                "entries": [
+                                    {
+                                        "content": {
+                                            "itemContent": {
+                                                "tweet_results": {
+                                                    "result": {
+                                                        "rest_id": "100",
+                                                        "core": {
+                                                            "user_results": {
+                                                                "result": {
+                                                                    "core": {
+                                                                        "screen_name": "artist"
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        "legacy": {
+                                                            "extended_entities": {
+                                                                "media": [
+                                                                    {
+                                                                        "media_url_https": (
+                                                                            "https://pbs.twimg.com/media/AAA"
+                                                                            "?format=jpg&name=small"
+                                                                        ),
+                                                                    },
+                                                                    {
+                                                                        "video_info": {
+                                                                            "variants": [
+                                                                                {
+                                                                                    "url": (
+                                                                                        "https://video.twimg.com/"
+                                                                                        "ext_tw_video/777/pu/vid/x.mp4"
+                                                                                    )
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    },
+                                                                ]
+                                                            },
+                                                            "quoted_status_result": {
+                                                                "result": {
+                                                                    "rest_id": "99",
+                                                                    "core": {
+                                                                        "user_results": {
+                                                                            "result": {
+                                                                                "core": {
+                                                                                    "screen_name": "quoted"
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    "legacy": {
+                                                                        "extended_entities": {
+                                                                            "media": [
+                                                                                {
+                                                                                    "media_url_https": (
+                                                                                        "https://pbs.twimg.com/media/BBB"
+                                                                                        "?format=png&name=orig"
+                                                                                    )
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    },
+                                                                }
+                                                            },
+                                                        },
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+    found: dict[str, str] = {}
+    ingest._collect_twitter_media(payload, found)
+    assert found["https://pbs.twimg.com/media/AAA?format=jpg&name=small"] == (
+        "https://x.com/artist/status/100"
+    )
+    assert found["https://video.twimg.com/ext_tw_video/777/pu/vid/x.mp4"] == (
+        "https://x.com/artist/status/100"
+    )
+    assert found["https://pbs.twimg.com/media/BBB?format=png&name=orig"] == (
+        "https://x.com/quoted/status/99"
+    )
+
+
 def test_danbooru_candidate_from_post() -> None:
     post = {
         "id": 42,

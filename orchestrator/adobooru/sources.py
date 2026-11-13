@@ -202,16 +202,126 @@ def parse_gallery_dl_records(
     return candidates
 
 
-def _collect_twitter_urls(node: Any, found: set[str]) -> None:
+def _tweet_identity(node: Mapping[str, Any]) -> tuple[str, str]:
+    """Return ``(tweet_id, screen_name)`` for a GraphQL tweet object."""
+
+    tweet = node.get("tweet")
+    if isinstance(tweet, Mapping):
+        node = tweet
+
+    tweet_id = _meta_str(node, "rest_id", "id_str")
+    legacy = node.get("legacy")
+    if not tweet_id and isinstance(legacy, Mapping):
+        tweet_id = _meta_str(legacy, "id_str", "id")
+    if not tweet_id:
+        return "", ""
+
+    authors: list[Mapping[str, Any]] = []
+    core = node.get("core")
+    if isinstance(core, Mapping):
+        user_results = core.get("user_results")
+        if isinstance(user_results, Mapping):
+            result = user_results.get("result")
+            if isinstance(result, Mapping):
+                authors.append(result)
+    if isinstance(legacy, Mapping):
+        user = legacy.get("user")
+        if isinstance(user, Mapping):
+            authors.append(user)
+    user = node.get("user")
+    if isinstance(user, Mapping):
+        authors.append(user)
+    author = node.get("author")
+    if isinstance(author, Mapping):
+        authors.append(author)
+
+    for author in authors:
+        nested = author.get("core")
+        if isinstance(nested, Mapping):
+            name = _meta_str(nested, "screen_name", "username")
+            if name:
+                return tweet_id, name
+        nested = author.get("legacy")
+        if isinstance(nested, Mapping):
+            name = _meta_str(nested, "screen_name", "username")
+            if name:
+                return tweet_id, name
+        name = _meta_str(author, "screen_name", "username")
+        if name:
+            return tweet_id, name
+    return tweet_id, ""
+
+
+def _tweet_media_urls(node: Mapping[str, Any]) -> Iterator[str]:
+    """Yield media URLs owned by one tweet (not quoted tweets)."""
+
+    tweet = node.get("tweet")
+    if isinstance(tweet, Mapping):
+        node = tweet
+    sources: list[Mapping[str, Any]] = [node]
+    legacy = node.get("legacy")
+    if isinstance(legacy, Mapping):
+        sources.append(legacy)
+
+    for source in sources:
+        for key in ("extended_entities", "entities"):
+            entities = source.get(key)
+            if not isinstance(entities, Mapping):
+                continue
+            media = entities.get("media")
+            if not isinstance(media, list):
+                continue
+            for item in media:
+                if not isinstance(item, Mapping):
+                    continue
+                for url_key in ("media_url_https", "media_url"):
+                    url = item.get(url_key)
+                    if isinstance(url, str):
+                        yield url
+                video_info = item.get("video_info")
+                if not isinstance(video_info, Mapping):
+                    continue
+                variants = video_info.get("variants")
+                if not isinstance(variants, list):
+                    continue
+                for variant in variants:
+                    if not isinstance(variant, Mapping):
+                        continue
+                    url = variant.get("url")
+                    if isinstance(url, str):
+                        yield url
+
+
+def _collect_twitter_media(node: Any, found: dict[str, str]) -> None:
+    """Map every media URL in a GraphQL payload to its tweet permalink."""
+
     if isinstance(node, str):
         if "pbs.twimg.com/media/" in node or "video.twimg.com/" in node:
-            found.add(node)
-    elif isinstance(node, Mapping):
+            found.setdefault(node, "")
+        return
+    if isinstance(node, Mapping):
+        tweet_id, screen_name = _tweet_identity(node)
+        if tweet_id:
+            source_url = (
+                f"https://x.com/{screen_name}/status/{tweet_id}"
+                if screen_name
+                else f"https://x.com/i/status/{tweet_id}"
+            )
+            for url in _tweet_media_urls(node):
+                if "pbs.twimg.com/media/" in url or "video.twimg.com/" in url:
+                    found[url] = source_url
         for value in node.values():
-            _collect_twitter_urls(value, found)
-    elif isinstance(node, list):
+            _collect_twitter_media(value, found)
+        return
+    if isinstance(node, list):
         for value in node:
-            _collect_twitter_urls(value, found)
+            _collect_twitter_media(value, found)
+
+
+def _collect_twitter_urls(node: Any, found: set[str]) -> None:
+    mapping: dict[str, str] = {}
+    _collect_twitter_media(node, mapping)
+    found.update(mapping)
 
 
 @dataclass
@@ -472,7 +582,7 @@ class TwitterSource:
         self.settings = settings
         self.http = http
 
-    def candidates(self, *, limit: int) -> Iterator[MediaCandidate]:
+    def candidates(self, *, limit: int | None) -> Iterator[MediaCandidate]:
         if not self.settings.twitter_targets:
             raise SourceError("No TWITTER_TARGETS configured")
         cookies = self.settings.twitter_cookies
@@ -511,7 +621,7 @@ class TwitterSource:
                 seen.add(candidate.origin_key)
                 produced += 1
                 yield candidate
-                if produced >= limit:
+                if limit is not None and produced >= limit:
                     return
         if produced == 0:
             if len(failures) >= targets_attempted:
@@ -601,15 +711,16 @@ class TwitterSource:
         if not cookies and not self.settings.twitter_allow_anonymous:
             raise SourceError("No cookies available for the Playwright session")
 
-        found: set[str] = set()
+        found: dict[str, str] = {}
         try:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=True)
                 context = browser.new_context(
-                    cookies=cookies,
                     user_agent=self.settings.user_agent,
                     viewport={"width": 1280, "height": 900},
                 )
+                if cookies:
+                    context.add_cookies(cookies)
                 page = context.new_page()
 
                 def on_response(response: Any) -> None:
@@ -623,7 +734,7 @@ class TwitterSource:
                         payload = response.json()
                     except Exception:  # noqa: BLE001
                         return
-                    _collect_twitter_urls(payload, found)
+                    _collect_twitter_media(payload, found)
 
                 page.on("response", on_response)
                 try:
@@ -668,7 +779,7 @@ class TwitterSource:
                     origin="twitter",
                     origin_key=origin_key,
                     media_url=normalized,
-                    source_url=target,
+                    source_url=found.get(raw_url) or target,
                     referer="https://x.com/",
                 )
             )

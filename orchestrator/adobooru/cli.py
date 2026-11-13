@@ -31,6 +31,7 @@ from .http import HttpClient
 from .jobs import build_runtime
 from .media import phash_hex
 from .scheduler import build_scheduler
+from .sources import TwitterSource
 from .szurubooru import SzurubooruClient
 from .tagger import Wd14Tagger
 from .tags import TagPolicy, build_tag_plan, load_tag_policy
@@ -418,6 +419,112 @@ def cmd_reindex(settings: Settings, *, download: bool, limit: int | None) -> int
     return 0
 
 
+def cmd_repair_sources(
+    settings: Settings,
+    *,
+    limit: int | None,
+    download: bool,
+    dry_run: bool,
+) -> int:
+    runtime = build_runtime(settings)
+    try:
+        targets = set(settings.twitter_targets)
+        bad: dict[int, str] = {}
+        page = 1
+        while True:
+            posts = runtime.client.list_posts(limit=100, page=page)
+            if not posts:
+                break
+            for post in posts:
+                post_id = post.get("id")
+                source = post.get("source")
+                if (
+                    isinstance(post_id, int)
+                    and isinstance(source, str)
+                    and source in targets
+                ):
+                    bad[post_id] = source
+            if len(posts) < 100:
+                break
+            page += 1
+
+        if not bad:
+            print("No posts use a plain X target URL as their source.")
+            return 0
+
+        LOG.info("Found %d post(s) with a generic X source", len(bad))
+        twitter = TwitterSource(settings, runtime.http)
+        repaired = 0
+        scanned = 0
+        for candidate in twitter.candidates(limit=limit):
+            scanned += 1
+            new_source = candidate.source_url
+            if not new_source or new_source in targets:
+                continue
+
+            post_id: int | None = None
+            match = runtime.store.find(origin=candidate.origin_key)
+            if match is not None and match.post_id is not None:
+                post_id = match.post_id
+            if post_id is None and download:
+                try:
+                    data = runtime.http.download(
+                        candidate.media_url,
+                        referer=candidate.referer,
+                        max_bytes=settings.max_download_bytes,
+                    )
+                except AdobooruError as exc:
+                    LOG.warning(
+                        "Could not download %s for checksum matching: %s",
+                        candidate.origin_key,
+                        exc,
+                    )
+                    continue
+                found = runtime.client.find_post_by_checksum(
+                    hashlib.sha1(data).hexdigest()
+                )
+                found_id = found.get("id") if found is not None else None
+                if isinstance(found_id, int):
+                    post_id = found_id
+
+            if post_id is None or post_id not in bad:
+                continue
+            if dry_run:
+                LOG.info(
+                    "Would update post #%d source -> %s",
+                    post_id,
+                    new_source,
+                )
+            else:
+                try:
+                    runtime.client.update_source(post_id, new_source)
+                except AdobooruError as exc:
+                    LOG.warning("Could not update post #%d: %s", post_id, exc)
+                    continue
+                runtime.store.record(
+                    origin=candidate.origin_key,
+                    source_url=new_source,
+                    post_id=post_id,
+                )
+                LOG.info("Updated post #%d source -> %s", post_id, new_source)
+            repaired += 1
+            bad.pop(post_id, None)
+            if not bad:
+                break
+
+        print(
+            "Scanned {} candidate(s); {} post(s) {}{}.".format(
+                scanned,
+                repaired,
+                "would be repaired" if dry_run else "repaired",
+                f"; {len(bad)} still unresolved" if bad else "",
+            )
+        )
+        return 0
+    finally:
+        runtime.store.close()
+
+
 def cmd_tag(
     settings: Settings,
     *,
@@ -571,6 +678,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reindex.add_argument("--limit", type=int, default=None)
 
+    repair = subparsers.add_parser(
+        "repair-sources",
+        help="replace generic X target URLs with per-tweet source links",
+    )
+    repair.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="stop after N scraped candidates (default: all)",
+    )
+    repair.add_argument(
+        "--download",
+        action="store_true",
+        help="match posts missing from the local index by SHA-1",
+    )
+    repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="log updates without changing any post",
+    )
+
     tag = subparsers.add_parser("tag", help="run the WD14 tagger against a local file")
     tag.add_argument("file")
     tag.add_argument("--top", type=int, default=30)
@@ -631,6 +759,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 settings,
                 download=args.download,
                 limit=args.limit,
+            )
+        if command == "repair-sources":
+            return cmd_repair_sources(
+                settings,
+                limit=args.limit,
+                download=args.download,
+                dry_run=args.dry_run,
             )
         if command == "tag":
             return cmd_tag(
