@@ -13,6 +13,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     ca-certificates \
     libgomp1 \
+    libatomic1 \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
