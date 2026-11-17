@@ -23,9 +23,9 @@ _TAG_UNDERSCORES = re.compile(r"_+")
 
 
 def sanitize_tag(name: object) -> str | None:
-    """Turn a Danbooru/WD14 tag into something Szurubooru accepts.
+    """Turn a Danbooru/WD14 tag into something the booru accepts.
 
-    Szurubooru's default ``tag_name_regex`` is ``^\\S+$``; whitespace is the
+    The default ``tag_name_regex`` is ``^\\S+$``; whitespace is the
     only hard failure.  We additionally normalise case/underscores and drop
     control characters so the tag list stays readable.
     """

@@ -1,0 +1,70 @@
+# Copy to config/config.toml and replace both secrets:
+#   cp config/config.toml.example config/config.toml
+#   openssl rand -hex 32   # run twice
+#
+# config/config.toml is gitignored because it contains live secrets.
+# Changing content_secret renames all media URLs; changing password_secret
+# invalidates every password. Set both before the first start.
+
+# Oxibooru server configuration.
+#
+# Mounted read-only at /opt/app/config.toml. Fields not listed here fall back
+# to server/config.toml.dist from the Oxibooru release.
+
+password_secret = "change-me-openssl-rand-hex-32"
+content_secret  = "change-me-openssl-rand-hex-32"
+
+data_url = "data"
+data_dir = "/data"
+
+webhooks = []
+
+delete_source_files = false
+append_tag_implications_on_post_edit = false
+post_similarity_threshold = 0.55
+
+pool_name_regex     = "^\\S+$"
+pool_category_regex = "^[^\\s%+#/]+$"
+
+log_filter = "oxibooru_server=info,tower_http=warn,axum=warn"
+auto_explain = false
+
+[thumbnails]
+avatar_width  = 300
+avatar_height = 300
+post_width    = 400
+post_height   = 400
+
+[limits]
+max_image_width                  = 16384
+max_image_height                 = 16384
+max_image_allocation             = "1GB"
+max_upload_size                  = "64MB"
+ffmpeg_timeout_seconds           = 60
+request_timeout_seconds          = 60
+max_download_redirects           = 5
+download_timeout_minutes         = 10
+download_connect_timeout_seconds = 10
+
+[anonymous_preferences]
+tag_blacklist          = []
+tag_category_blacklist = []
+hide_unsafe  = false
+hide_sketchy = false
+hide_untagged = false
+
+[public_info]
+name = "Adobooru"
+default_user_rank = "regular"
+enable_safety = true
+
+username_regex          = "^[a-zA-Z0-9_-]{1,32}$"
+password_regex          = "^.{5,}$"
+tag_name_regex          = "^\\S+$"
+tag_category_name_regex = "^[^\\s%+#/]+$"
+
+[public_info.privileges]
+# The orchestrator uploads bytes via /api/uploads/ (regular rank needs only
+# upload_create). contentUrl mode lets the server download media itself, which
+# Oxibooru normally restricts to power users.
+upload_use_downloader = "regular"

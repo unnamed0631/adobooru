@@ -24,7 +24,7 @@ class DedupeMatch:
 class DedupeStore:
     """Local SQLite index of everything this service has committed.
 
-    Szurubooru itself is the authority for exact content matches (via
+    Oxibooru itself is the authority for exact content matches (via
     reverse search); this index catches near-duplicates cheaply and keeps
     repeated runs from re-downloading known origins.
     """

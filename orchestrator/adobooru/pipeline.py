@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
+import blake3
+
 from .config import Settings
 from .constants import SAFETY_VALUES
 from .dedupe import DedupeStore
@@ -201,7 +203,7 @@ class IngestPipeline:
                     post_id,
                 )
 
-        # Fast path: let Szurubooru download the URL itself. Only origin and
+        # Fast path: let Oxibooru download the URL itself. Only origin and
         # source dedupe are available here, so it is opt-in.
         if self.settings.danbooru_content_url_mode and candidate.origin == "danbooru":
             plan = build_tag_plan(
@@ -245,7 +247,7 @@ class IngestPipeline:
 
         downloaded = self._download(candidate)
         sha256 = hashlib.sha256(downloaded.data).hexdigest()
-        sha1 = hashlib.sha1(downloaded.data).hexdigest()
+        checksum = blake3.blake3(downloaded.data).hexdigest()
         phash = (
             phash_hex(downloaded.data) if downloaded.mime.startswith("image/") else None
         )
@@ -266,7 +268,7 @@ class IngestPipeline:
 
         if self.settings.szuru_server_dedupe:
             try:
-                existing = self.client.find_post_by_checksum(sha1)
+                existing = self.client.find_post_by_checksum(checksum)
             except HttpStatusError as exc:
                 LOG.warning(
                     "Checksum lookup failed for %s (%s); continuing",
@@ -285,7 +287,7 @@ class IngestPipeline:
                 )
                 return ProcessResult(
                     Outcome.DUPLICATE,
-                    detail=f"sha1 lookup matched post #{post_id}",
+                    detail=f"blake3 lookup matched post #{post_id}",
                 )
 
         if self.settings.szuru_server_dedupe and downloaded.mime.startswith("image/"):
@@ -396,7 +398,7 @@ class IngestPipeline:
             if exc.status == 409:
                 raise SkipMedia(
                     SkipReason.DUPLICATE,
-                    "Szurubooru reported an integrity conflict: %s"
+                    "Oxibooru reported an integrity conflict: %s"
                     % (exc.body or "duplicate content"),
                 ) from exc
             raise

@@ -1,4 +1,4 @@
-"""Szurubooru REST API client."""
+"""Szurubooru/Oxibooru REST API client."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class SzurubooruClient:
         if not settings.szuru_username or not settings.szuru_token:
             raise ConfigurationError(
                 "SZURU_USERNAME and SZURU_TOKEN must be set. Create a token "
-                "under User settings -> API tokens in Szurubooru."
+                "under User settings -> API tokens in Oxibooru."
             )
         base = settings.szuru_api_url.rstrip("/")
         base = base.removesuffix("/api")
@@ -42,7 +42,7 @@ class SzurubooruClient:
         self.http = http
         credentials = f"{settings.szuru_username}:{settings.szuru_token}"
         encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
-        # Szurubooru API tokens use the "Token" scheme.  Some builds/docs use
+        # Oxibooru API tokens use the "Token" scheme.  Some builds/docs use
         # Basic instead, so fall back to it if the server rejects the header.
         self._encoded_credentials = encoded
         self._auth_scheme = "Token"
@@ -76,7 +76,7 @@ class SzurubooruClient:
             if self._auth_scheme != "Token" or exc.status not in (400, 401, 403):
                 raise
             LOG.info(
-                "Szurubooru rejected Token auth; retrying with Basic "
+                "Oxibooru rejected Token auth; retrying with Basic "
                 "(set SZURU_TOKEN to an API token or password)"
             )
             self._auth_scheme = "Basic"
@@ -96,7 +96,7 @@ class SzurubooruClient:
             return response.json()
         except ValueError as exc:
             raise AdobooruError(
-                f"Szurubooru returned a non-JSON response: {exc}"
+                f"Oxibooru returned a non-JSON response: {exc}"
             ) from exc
 
     def ping(self) -> None:
@@ -115,7 +115,7 @@ class SzurubooruClient:
         except HttpStatusError as exc:
             if exc.status == 400:
                 LOG.warning(
-                    "Szurubooru rejected the source query; disabling "
+                    "Oxibooru rejected the source query; disabling "
                     "source lookups for this run"
                 )
                 self._source_search_supported = False
@@ -124,21 +124,21 @@ class SzurubooruClient:
         posts = _post_list(self._json(response))
         return posts[0] if posts else None
 
-    def find_post_by_checksum(self, sha1: str) -> dict[str, Any] | None:
-        """Look up a post by Szurubooru's stored content SHA-1."""
+    def find_post_by_checksum(self, checksum: str) -> dict[str, Any] | None:
+        """Look up a post by Oxibooru's stored BLAKE3 content checksum."""
 
-        if not self._checksum_search_supported or not sha1:
+        if not self._checksum_search_supported or not checksum:
             return None
         try:
             response = self._request(
                 "GET",
                 "/api/posts/",
-                params={"query": f"sha1:{sha1}", "limit": 1},
+                params={"query": f"content-checksum:{checksum}", "limit": 1},
             )
         except HttpStatusError as exc:
             if exc.status == 400:
                 LOG.warning(
-                    "This Szurubooru version rejects sha1 searches; "
+                    "This booru rejects content-checksum searches; "
                     "disabling checksum lookups for this run"
                 )
                 self._checksum_search_supported = False
@@ -183,7 +183,7 @@ class SzurubooruClient:
         payload = self._json(response)
         token = payload.get("token") if isinstance(payload, Mapping) else None
         if not token:
-            raise AdobooruError("Szurubooru upload did not return a content token")
+            raise AdobooruError("Oxibooru upload did not return a content token")
         return str(token)
 
     def create_post(
@@ -209,7 +209,7 @@ class SzurubooruClient:
         response = self._request("POST", "/api/posts/", json=payload)
         data = self._json(response)
         if not isinstance(data, dict):
-            raise AdobooruError("Szurubooru returned an unexpected post payload")
+            raise AdobooruError("Oxibooru returned an unexpected post payload")
         return data
 
     def list_posts(self, *, limit: int = 100, page: int = 1) -> list[dict[str, Any]]:

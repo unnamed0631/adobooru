@@ -7,10 +7,10 @@ docker compose exec orchestrator python ingest_orchestrator.py danbooru --limit 
 # Adobooru
 
 A containerized, self-hosted booru plus an automated ingestion service for Ado
-artwork. It combines [Szurubooru](https://github.com/rr-/szurubooru) with a
+artwork. It combines [Oxibooru](https://github.com/liamw1/oxibooru) with a
 Python orchestrator that scrapes Danbooru and X/Twitter, runs a local WD14
 ConvNeXtV2 tagger over untagged media, de-duplicates by checksum and
-perceptual hash, and writes finished posts through Szurubooru's REST API.
+perceptual hash, and writes finished posts through Oxibooru's REST API.
 
 ```
 
@@ -28,12 +28,12 @@ perceptual hash, and writes finished posts through Szurubooru's REST API.
 │ REST :6666 │ Redis job locks │
 ▼ └────────────────────┘
 ┌─────────────────────┐ ┌────────────────────┐
-│ szurubooru-server │─────►│ PostgreSQL │
+│ server │─────►│ PostgreSQL │
 └──────┬──────────────┘ └────────────────────┘
 │ media volume
 ▼
 ┌─────────────────────┐
-│ szurubooru-client │ http://localhost:8080
+│ client │ http://localhost:8082
 └─────────────────────┘
 
 ```
@@ -42,13 +42,13 @@ perceptual hash, and writes finished posts through Szurubooru's REST API.
 
 | Service             | Image                      | Purpose                                         | Published port   |
 | ------------------- | -------------------------- | ----------------------------------------------- | ---------------- |
-| `postgres`          | `postgres:16-alpine`       | Posts, tags, aliases, users                     | internal         |
+| `sql`               | `postgres:16-alpine`       | Posts, tags, users, tokens, history             | internal         |
 | `redis`             | `redis:7-alpine`           | Cross-replica orchestrator locks                | internal         |
-| `szurubooru-server` | `szurubooru/server:latest` | REST API + media processing                     | `6666`           |
-| `szurubooru-client` | `szurubooru/client:latest` | Web UI + nginx `/api` `/data` proxy             | `8080`           |
+| `server`            | `oxibooru/server:0.9.0`    | REST API + media processing                     | `127.0.0.1:6666` |
+| `client`            | `oxibooru/client:0.9.0`    | Web UI + nginx `/api` `/data` proxy             | `8082`           |
 | `orchestrator`      | built from `orchestrator/` | Scraping, tagging, dedupe, scheduling, HTTP API | `127.0.0.1:8081` |
 
-Redis is **not** used by Szurubooru itself (it has no Redis cache backend). It
+Redis is **not** used by Oxibooru itself (it has no Redis cache backend). It
 exists for the orchestrator's distributed job locks and future workers.
 
 ## What the orchestrator does
@@ -69,10 +69,10 @@ exists for the orchestrator's distributed job locks and future workers.
   fields, and the original `source` URL. Direct `pximg.net` sources are
   rewritten to `https://www.pixiv.net/artworks/<id>` because the Pixiv CDN
   returns 403 without a pixiv.net Referer.
-- Downloads the bytes locally (for SHA-256, SHA-1 and pHash), uploads them
+- Downloads the bytes locally (for SHA-256, BLAKE3 and pHash), uploads them
   through `POST /api/uploads/`, then creates the post with `contentToken`.
 - `DANBOORU_CONTENT_URL_MODE=true` instead sends `contentUrl` and lets
-  Szurubooru download the file. This is faster but disables content-hash
+  Oxibooru download the file. This is faster but disables content-hash
   dedupe for those posts.
 
 ### X / Twitter pipeline
@@ -94,7 +94,7 @@ exists for the orchestrator's distributed job locks and future workers.
 
 ### AI auto-tagging
 
-Szurubooru posts created from X have no booru tags, so the service runs a
+Oxibooru posts created from X have no booru tags, so the service runs a
 local WD14 ONNX model (`SmilingWolf/wd-v1-4-convnextv2-tagger-v2` by default):
 
 - Input: square white-padded, BICUBIC-resized, RGB→BGR, 0–255 float (the
@@ -126,10 +126,10 @@ Each candidate goes through, in order:
 3. **SHA-256** of the downloaded bytes (exact duplicates in the local index).
 4. **64-bit DCT pHash** against the local index (Hamming distance
    `PHASH_THRESHOLD`, default 5; re-encodes/resizes are caught).
-5. **Szurubooru SHA-1 lookup** — `GET /api/posts/?query=sha1:<hex>` uses the
-   checksum Szurubooru stores for every post, catching exact content added by
+5. **Oxibooru BLAKE3 lookup** — `GET /api/posts/?query=content-checksum:<blake3-hex>` uses the
+   checksum Oxibooru stores for every post, catching exact content added by
    other users or tools without uploading the file again.
-6. **Szurubooru reverse search** — `POST /api/posts/reverse-search/` checks
+6. **Oxibooru reverse search** — `POST /api/posts/reverse-search/` checks
    the entire live database for exact and perceptually similar content. This
    check is best-effort; a server-side processing error does not block the
    upload.
@@ -154,7 +154,7 @@ Edit `.env` and set at least:
 - `POSTGRES_PASSWORD` — any strong secret.
 - `SZURU_TOKEN` — leave empty for now; you will create it in step 4.
 
-Also edit `config/szurubooru-server.yaml` and replace:
+Also edit `config/config.toml` and replace:
 `secret: change-me-to-a-long-random-string`
 
 This value salts password hashes and stored filenames. Use the same secret on
@@ -168,17 +168,17 @@ present; that is expected on first boot.
 ### 2. Start the booru only
 
 ```bash
-docker compose up -d postgres redis szurubooru-server szurubooru-client
-docker compose ps          # wait for szurubooru-server to become healthy
+docker compose up -d sql redis server client
+docker compose ps          # wait for the client to become healthy
 ```
 
-Open <http://localhost:8080>. The first account you register becomes an
+Open <http://localhost:8082>. The first account you register becomes an
 administrator. Register your personal admin account.
 
 ### 3. Create an ingestion account and API token
 
 1. As the admin, create a second user, e.g. `adobooru-bot`, with the
-   **regular** rank. Regular is enough: `config/szurubooru-server.yaml`
+   **regular** rank. Regular is enough: `config/config.toml`
    grants `uploads:use_downloader` to regular users, and the default
    `posts:create:identified`, `uploads:create` and `tags:create` privileges
    cover the upload path.
@@ -213,7 +213,7 @@ curl http://127.0.0.1:8081/healthz
 ### 5. First ingestion (dry run)
 
 ```bash
-# Download + tag, but write nothing to Szurubooru.
+# Download + tag, but write nothing to Oxibooru.
 docker compose exec orchestrator \
   python ingest_orchestrator.py once --limit 3 --dry-run
 
@@ -226,7 +226,7 @@ docker compose exec orchestrator \
   python ingest_orchestrator.py twitter --limit 10
 ```
 
-Inspect <http://localhost:8080> and the orchestrator logs. When it looks
+Inspect <http://localhost:8082> and the orchestrator logs. When it looks
 right, leave the `serve` container running; APScheduler will ingest on the
 cron expressions in `.env` (`DANBOORU_CRON`, `TWITTER_CRON`).
 
@@ -237,10 +237,10 @@ the full list. The most important ones:
 
 | Variable                                | Default                                | Notes                                                          |
 | --------------------------------------- | -------------------------------------- | -------------------------------------------------------------- |
-| `SZURU_API_URL`                         | compose: `http://szurubooru-client`    | Host dev: `http://localhost:8080` (client nginx serves `/api`) |
+| `SZURU_API_URL`                         | compose: `http://client`    | Host dev: `http://localhost:8082` (client nginx serves `/api`) |
 | `SZURU_USERNAME` / `SZURU_TOKEN`        | —                                      | API token (`Token user:token`, Basic fallback)                 |
 | `SZURU_SOURCE_LOOKUP`                   | `warn`                                 | `off`, `warn`, `skip`                                          |
-| `SZURU_SERVER_DEDUPE`                   | `true`                                 | SHA-1 lookup + server reverse search                           |
+| `SZURU_SERVER_DEDUPE`                   | `true`                                 | BLAKE3 lookup + server reverse search                           |
 | `DANBOORU_QUERY`                        | `ado_(utaite)`                         | Danbooru tag string (`ado_(utaitor)` is not a real tag)        |
 | `DANBOORU_LIMIT` / `DANBOORU_MAX_PAGES` | `40` / `2`                             | Per-run cap                                                    |
 | `DANBOORU_CONTENT_URL_MODE`             | `false`                                | Server-side download, no hashes                                |
@@ -250,7 +250,7 @@ the full list. The most important ones:
 | `TAGGER_ENABLED` / `TAGGER_REQUIRED`    | `true` / `false`                       | `REQUIRED` aborts X runs if the model fails                    |
 | `PHASH_THRESHOLD`                       | `5`                                    | Hamming distance; `0` only exact hashes, `<0` disables pHash   |
 | `ALLOWED_SAFETY`                        | `safe,sketchy`                         | `unsafe` is still blocked                                      |
-| `MAX_DOWNLOAD_MB`                       | `64`                                   | Keep in sync with `max_dl_filesize`                            |
+| `MAX_DOWNLOAD_MB`                       | `64`                                   | Keep in sync with `[limits] max_upload_size`                   |
 | `ORCHESTRATOR_API_KEY`                  | set in `.env`                          | Required as `X-API-Key` on non-health endpoints                |
 | `SCHEDULER_TIMEZONE`                    | `UTC`                                  | IANA timezone for cron                                         |
 
@@ -271,16 +271,19 @@ Restart the orchestrator after editing (`docker compose up -d orchestrator`).
 A plain `restart` keeps the old container environment, so changed `.env`
 values require `up -d`.
 
-### `config/szurubooru-server.yaml`
+### `config/config.toml`
 
-- `secret` — **change this** (see above).
-- `domain` — update if you change `SZURU_WEB_PORT` or put the UI behind a
-  reverse proxy.
-- `max_dl_filesize` — must be at least `MAX_DOWNLOAD_MB` for contentUrl mode.
-- `privileges.uploads:use_downloader: regular` — lets a regular ingest user
-  use `contentUrl` as well as token uploads.
-- `thumbnails` — 400 px post thumbnails.
-- `convert.gif` — GIFs are kept as GIFs by default.
+- `password_secret` / `content_secret` — **change both** before first start.
+  They salt password hashes and media filenames respectively. Changing
+  `content_secret` later renames every media URL.
+- `[public_info] name` — instance name shown in the UI.
+- `[limits] max_upload_size` — must be at least `MAX_DOWNLOAD_MB` for
+  contentUrl mode.
+- `[public_info.privileges] upload_use_downloader = "regular"` — lets a
+  regular ingest user use `contentUrl` as well as token uploads.
+- `[thumbnails]` — 400 px post thumbnails.
+- `data_dir = "/data"` and `data_url = "data"` are required by the compose
+  mounts; do not change them.
 
 ## CLI
 
@@ -294,7 +297,7 @@ a host virtualenv. `--dry-run` downloads and tags but never writes.
 | `serve`                                               | Scheduler + HTTP API (compose default)                    |
 | `danbooru`, `twitter`, `once`                         | One pass of one/all sources                               |
 | `doctor [--offline] [--load-model]`                   | Credentials, API, cookies, model, Redis                   |
-| `reindex [--download] [--limit N]`                    | Seed the local hash index from Szurubooru                 |
+| `reindex [--download] [--limit N]`                    | Seed the local hash index from Oxibooru                 |
 | `repair-sources [--download] [--limit N] [--dry-run]` | Replace generic X target URLs with per-tweet source links |
 | `tag FILE [--json] [--top N]`                         | Run WD14 on a local file                                  |
 
@@ -312,11 +315,11 @@ docker compose exec orchestrator \
 
 ### Local (non-Docker) orchestrator
 
-Szurubooru stays in Docker, but the Python service runs from the repo so you
+Oxibooru stays in Docker, but the Python service runs from the repo so you
 can edit and debug it directly. Start only the dependencies:
 
 ```bash
-docker compose up -d postgres redis szurubooru-server szurubooru-client
+docker compose up -d sql redis server client
 python -m venv .venv
 . .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r orchestrator/requirements.txt
@@ -381,7 +384,7 @@ To run the scheduler without the HTTP API, change the orchestrator's
 
 ```bash
 docker compose logs -f orchestrator
-docker compose logs -f szurubooru-server
+docker compose logs -f server
 ```
 
 Each run ends with a summary:
@@ -390,23 +393,20 @@ Each run ends with a summary:
 
 ### Backups
 
-Media is a Docker named volume; posts/tags/users are in PostgreSQL.
-Szurubooru has **no S3 backend** — it stores originals and thumbnails on the
-local `/data` volume. Snapshot that volume to S3-compatible storage with
-`restic`/`rclone` if you need off-box copies:
+Media is the bind mount `./data`; the database is in `./sql`. Oxibooru has
+**no S3 backend** — it stores originals and thumbnails under `/data`.
+Snapshot both paths with `restic`/`rclone`/`rsync` for off-box copies:
 
 ```bash
-docker compose exec -T postgres pg_dump -U szurubooru szurubooru \
+docker compose exec -T sql pg_dump -U szurubooru szurubooru \
   | gzip > adobooru-$(date +%F).sql.gz
 
-docker run --rm \
-  -v adobooru_szurubooru-data:/data:ro \
-  -v "$PWD":/backup \
-  alpine tar czf /backup/adobooru-media.tar.gz -C /data .
+rsync -aH --delete data/ /path/to/backup/adobooru-data/
 ```
 
-(Volume names are prefixed with the Compose project name; verify with
-`docker volume ls`.)
+Stop `orchestrator` (and optionally `server`) before a cold copy for an exact
+point-in-time snapshot. The pre-migration Szurubooru volumes are kept as a
+rollback copy; see `MIGRATION-OXIBOORU.md`.
 
 ### Model cache
 
@@ -417,7 +417,7 @@ Downloaded WD14 files live in the `orchestrator-data` volume at
 
 ### Tag categories
 
-Uploaded tags are auto-created in Szurubooru's default category. To classify
+Uploaded tags are auto-created in Oxibooru's default category. To classify
 `ado` as an artist tag, edit it once in the UI (Tags → `ado` → category); new
 posts will reuse the existing tag. There is no automatic category mapping in
 this project.
@@ -427,20 +427,20 @@ this project.
 | Symptom                                                             | Cause / fix                                                                                                                                       |
 | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Orchestrator restarts: `SZURU_USERNAME and SZURU_TOKEN must be set` | Create the token in the UI, fill `.env`, then `docker compose up -d orchestrator`.                                                                |
-| `401` / `403` from Szurubooru                                       | Wrong token, or the user lacks `posts:create`, `uploads:create` or `tags:create`. Use a regular user and run `doctor`.                            |
+| `401` / `403` from Oxibooru                                       | Wrong token, or the user lacks `posts:create`, `uploads:create` or `tags:create`. Use a regular user and run `doctor`.                            |
 | `uploads:use_downloader` error                                      | Only affects contentUrl mode; the provided server config grants it to regular users. Otherwise use token uploads (default).                       |
 | `406` responses                                                     | A custom client omitted `Accept: application/json`; the bundled client always sends it.                                                           |
-| `Szurubooru rejected the source query ...`                          | Your server's search syntax differs. Set `SZURU_SOURCE_LOOKUP=off`; hash dedupe still works.                                                      |
+| `Oxibooru rejected the source query ...`                          | Your server's search syntax differs. Set `SZURU_SOURCE_LOOKUP=off`; hash dedupe still works.                                                      |
 | `gallery-dl exited with 1`                                          | Cookies expired, the target is private, or X is rate limiting. Refresh `secrets/cookies.txt`, run `doctor`, lower `TWITTER_LIMIT`.                |
 | `X redirected to the login page`                                    | Cookies are stale. Re-export them; keep `TWITTER_ALLOW_ANONYMOUS=false`.                                                                          |
 | `No X/Twitter media found`                                          | Hashtag search requires login; check `TWITTER_TARGETS`, cookies, and gallery-dl's stderr (`python ingest_orchestrator.py -vv twitter --limit 1`). |
 | Source links open a hashtag/profile instead of the tweet            | Run `repair-sources --dry-run`, then `repair-sources` to rewrite known posts; new X posts store the per-tweet permalink.                          |
 | Model download `401`/`404`                                          | Repository/file names changed or are gated. Set `model.repo`/`model.file` in `tagging.yaml`, or place both files in the model dir.                |
 | `Model returned N scores but selected_tags.csv has M rows`          | ONNX and CSV are from different checkpoints. Delete the model dir and let it re-download.                                                         |
-| `413` / file too large                                              | Raise both `MAX_DOWNLOAD_MB` and `max_dl_filesize` (server config); restart both containers.                                                      |
+| `413` / file too large                                              | Raise both `MAX_DOWNLOAD_MB` and `[limits] max_upload_size`; restart both containers.                                                             |
 | `POSTGRES_PASSWORD must be set`                                     | Fill `.env` before `docker compose up`.                                                                                                           |
-| Ports already in use                                                | Change `SZURU_API_PORT` / `SZURU_WEB_PORT`; update `domain` in the server config if the UI port changes.                                          |
-| UI loads but thumbnails 404                                         | The client must mount the shared `szurubooru-data` volume read-only; check server logs for failed thumbnail generation.                           |
+| Ports already in use                                                | Change `OXI_API_PORT` / `OXI_WEB_PORT` in `.env`, then `docker compose up -d`.                                                                     |
+| UI loads but thumbnails 404                                         | The client must mount the shared `./data` volume read-only; check server logs for failed thumbnail generation.                           |
 | First run tags everything `sketchy`                                 | WD14 rating confidence is below `thresholds.rating`. Lower it or set `safety.fallback: safe`, and review a sample.                                |
 
 ## Notes, limitations and fair use
@@ -456,12 +456,12 @@ this project.
 - **Source-only dedupe is ambiguous.** One tweet can contain several images,
   which is why the default lookup mode only warns. Hash/reverse-search dedupe
   is authoritative.
-- **`contentUrl` mode weakens dedupe.** Szurubooru downloads the file, so no
-  local SHA-256/SHA-1/pHash is computed. Prefer token uploads for archival.
+- **`contentUrl` mode weakens dedupe.** Oxibooru downloads the file, so no
+  local SHA-256/BLAKE3/pHash is computed. Prefer token uploads for archival.
 - **The orchestrator API has one shared key.** It is bound to loopback and is
   not a multi-user service.
-- **Szurubooru has no S3 storage backend.** The spec's "local volume or S3"
-  maps to a local volume plus snapshotting. Do not point `szurubooru-data` at
+- **Oxibooru has no S3 storage backend.** The spec's "local volume or S3"
+  maps to a local volume plus snapshotting. Do not point `./data` at
   a network filesystem without testing it — it is a plain directory with
   atomic renames.
 - Respect artists' rights, X's Terms of Service and Danbooru's rate limits.

@@ -2,7 +2,7 @@
 
 A small service that pulls posts from Danbooru and X/Twitter, runs a local
 WD14 tagger over untagged media, de-duplicates content, and uploads results
-to a self-hosted Szurubooru instance.
+to a self-hosted Oxibooru instance.
 
 The package is split by responsibility:
 
@@ -11,7 +11,7 @@ The package is split by responsibility:
 ``http``        retrying, rate-limited HTTP client
 ``media``       MIME sniffing, pHash and Twitter URL helpers
 ``dedupe``      local SQLite duplicate index
-``szurubooru``  Szurubooru REST client
+``szurubooru``  Oxibooru REST client
 ``tagger``      WD14 ONNX tagger
 ``cookies``     JSON/Netscape cookie loading
 ``sources``     Danbooru and X/Twitter adapters

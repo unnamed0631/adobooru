@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import blake3
 from dotenv import load_dotenv
 
 from .api import create_api
@@ -193,7 +194,7 @@ def cmd_doctor(settings: Settings, *, offline: bool, load_model: bool) -> int:
         try:
             SzurubooruClient(settings, http).ping()
             add(
-                "Szurubooru API",
+                "Oxibooru API",
                 True,
                 f"{settings.szuru_api_url} reachable as {settings.szuru_username}",
             )
@@ -206,14 +207,14 @@ def cmd_doctor(settings: Settings, *, offline: bool, load_model: bool) -> int:
             elif exc.status == 406:
                 hint = " (the server requires Accept: application/json)"
             add(
-                "Szurubooru API",
+                "Oxibooru API",
                 False,
                 f"{exc}{hint}",
             )
         except AdobooruError as exc:
-            add("Szurubooru API", False, str(exc))
+            add("Oxibooru API", False, str(exc))
     elif offline:
-        add("Szurubooru API", True, "skipped (--offline)", required=False)
+        add("Oxibooru API", True, "skipped (--offline)", required=False)
 
     model_file = settings.tagger_dir / policy.model_file
     tags_file = settings.tagger_dir / policy.tags_file
@@ -481,7 +482,7 @@ def cmd_repair_sources(
                     )
                     continue
                 found = runtime.client.find_post_by_checksum(
-                    hashlib.sha1(data).hexdigest()
+                    blake3.blake3(data).hexdigest()
                 )
                 found_id = found.get("id") if found is not None else None
                 if isinstance(found_id, int):
@@ -597,7 +598,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ingest_orchestrator.py",
         description=(
-            "Danbooru + X/Twitter ingestion, WD14 auto-tagging and Szurubooru uploads."
+            "Danbooru + X/Twitter ingestion, WD14 auto-tagging and Oxibooru uploads."
         ),
     )
     parser.add_argument(
@@ -630,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument(
         "--dry-run",
         action="store_true",
-        help="download and tag but do not write to Szurubooru",
+        help="download and tag but do not write to Oxibooru",
     )
 
     run_parser = subparsers.add_parser(
@@ -669,7 +670,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     reindex = subparsers.add_parser(
-        "reindex", help="seed the local dedupe index from Szurubooru"
+        "reindex", help="seed the local dedupe index from Oxibooru"
     )
     reindex.add_argument(
         "--download",
@@ -691,7 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     repair.add_argument(
         "--download",
         action="store_true",
-        help="match posts missing from the local index by SHA-1",
+        help="match posts missing from the local index by BLAKE3",
     )
     repair.add_argument(
         "--dry-run",

@@ -1,5 +1,9 @@
 .env
 data/
+sql/
+backups/
+.docker-build/
+.migrate-tmp/
 secrets/*
 !secrets/README.md
 
@@ -7,6 +11,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.venv-test/
 venv/
 
 *.sqlite3
@@ -15,5 +20,6 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Local instance config (contains the live secret)
+# Local instance configs (contain live secrets/tokens)
 config/szurubooru-server.yaml
+config/config.toml

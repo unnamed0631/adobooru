@@ -808,14 +808,14 @@ def test_szurubooru_checksum_lookup() -> None:
     http: Any = FakeHttp([FakeResponse([{"id": 5}]), FakeResponse([])])
     client = ingest.SzurubooruClient(settings, http)
 
-    sha1 = "a" * 40
-    assert client.find_post_by_checksum(sha1) == {"id": 5}
-    assert client.find_post_by_checksum(sha1) is None
+    checksum = "a" * 64
+    assert client.find_post_by_checksum(checksum) == {"id": 5}
+    assert client.find_post_by_checksum(checksum) is None
 
     method, url, kwargs = http.calls[0]
     assert method == "GET"
     assert url == "http://booru:6666/api/posts/"
-    assert kwargs["params"] == {"query": "sha1:" + sha1, "limit": 1}
+    assert kwargs["params"] == {"query": "content-checksum:" + checksum, "limit": 1}
 
 
 def test_szurubooru_client_requires_credentials() -> None:

@@ -1,4 +1,5 @@
 requests>=2.32,<3
+blake3>=0.4,<2
 Pillow>=10.4,<12
 pillow-heif>=0.18,<2
 numpy>=1.26,<3
