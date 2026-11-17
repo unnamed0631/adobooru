@@ -116,6 +116,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       ORCHESTRATOR_HOST: 0.0.0.0
       ORCHESTRATOR_PORT: "8081"
+      # glibc otherwise creates up to 8 malloc arenas per core and keeps freed
+      # buffers in each thread's arena; with 28 threads that stranded hundreds
+      # of MB in swap.  Two shared arenas is plenty for this workload.
+      MALLOC_ARENA_MAX: "2"
     volumes:
       - orchestrator-data:/var/lib/adobooru
       - ./config/tagging.yaml:/etc/adobooru/tagging.yaml:ro

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import io
 import os
 import threading
@@ -19,6 +20,22 @@ from .http import HttpClient
 from .media import _flatten_alpha
 from .tags import TagPolicy
 from .utils import LOG
+
+# The default ONNX Runtime thread count is one per core; each worker keeps its
+# own scratch buffers, which is a large and avoidable slice of the RSS.  Tagging
+# is far from the bottleneck of an ingest run, so keep it small.
+_INTRA_OP_THREADS = 2
+_INTER_OP_THREADS = 1
+
+
+def _release_heap() -> None:
+    """Hand freed arena pages back to the kernel (glibc only, best effort)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):  # pragma: no cover - non-glibc libc
+        return
 
 
 @dataclass(frozen=True)
@@ -138,8 +155,19 @@ class Wd14Tagger:
                 "onnxruntime is not installed; install requirements.txt"
             ) from exc
         providers = list(self.policy.providers) or ["CPUExecutionProvider"]
+        options = ort.SessionOptions()
+        # Do not retain the activation workspace between images: the default CPU
+        # arena grows to the high-water mark of a run and never returns it.
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False
+        options.intra_op_num_threads = _INTRA_OP_THREADS
+        options.inter_op_num_threads = _INTER_OP_THREADS
         try:
-            session = ort.InferenceSession(str(model_path), providers=providers)
+            session = ort.InferenceSession(
+                str(model_path),
+                sess_options=options,
+                providers=providers,
+            )
         except Exception as exc:
             raise TaggerError(f"Could not load ONNX model {model_path}: {exc}") from exc
         inputs = session.get_inputs()
@@ -327,6 +355,20 @@ class Wd14Tagger:
         scores = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
         return self._build_prediction(scores, names, categories)
 
+    def unload(self) -> None:
+        """Drop the ONNX session so idle memory is returned to the OS."""
+        with self._lock:
+            had_session = self._session is not None
+            self._session = None
+            self._input_name = ""
+            self._input_shape = ()
+            self._tag_names = []
+            self._tag_categories = []
+        if had_session:
+            gc.collect()
+            _release_heap()
+            LOG.info("Unloaded WD14 tagger; memory released")
+
 
 class TaggerRunner:
     def __init__(
@@ -372,3 +414,7 @@ class TaggerRunner:
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             LOG.warning("AI tagging failed for this image: %s", exc)
             return None
+
+    def unload(self) -> None:
+        if self._tagger is not None:
+            self._tagger.unload()

@@ -143,6 +143,7 @@ class JobRunner:
                 self._persist(stats)
             finally:
                 self._release(source)
+                self._unload_tagger_if_idle()
         LOG.info(
             "%s done in %.1fs: scanned=%d uploaded=%d duplicates=%d "
             "skipped=%d failed=%d",
@@ -180,6 +181,20 @@ class JobRunner:
         with self._active_lock:
             self._active.pop(source, None)
         self._local_locks[source].release()
+
+    def _unload_tagger_if_idle(self) -> None:
+        """Return the WD14 model's memory between runs.
+
+        Reloading costs a couple of seconds, which is negligible compared to the
+        hours between scheduled runs, but the model and the ONNX arena otherwise
+        stay resident forever.
+        """
+        with self._active_lock:
+            busy = bool(self._active)
+        if busy:
+            LOG.debug("Skipping tagger unload; another ingestion job is running")
+            return
+        self.pipeline.tagger.unload()
 
     def _acquire_redis(self, source: str) -> bool | None:
         if self._redis is None:

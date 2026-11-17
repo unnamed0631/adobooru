@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import threading
+import time
 import urllib.parse
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -601,20 +602,47 @@ class TwitterSource:
             targets_attempted += 1
             found: list[MediaCandidate] = []
             errors: list[str] = []
+            method = "gallery-dl"
+            started = time.monotonic()
             try:
                 found = self._via_gallery_dl(target)
             except SourceError as exc:
                 errors.append(str(exc))
                 LOG.warning("gallery-dl failed for %s: %s", target, exc)
+            LOG.info(
+                "gallery-dl returned %d candidate(s) for %s in %.1fs",
+                len(found),
+                target,
+                time.monotonic() - started,
+            )
             if not found and self.settings.twitter_fallback != "none":
+                method = "playwright"
+                LOG.info(
+                    "gallery-dl produced no candidates for %s; trying Playwright",
+                    target,
+                )
+                started = time.monotonic()
                 try:
                     found = self._via_playwright(target)
                 except SourceError as exc:
                     errors.append(str(exc))
+                    method = "none"
                     LOG.warning("Playwright fallback failed for %s: %s", target, exc)
+                else:
+                    LOG.info(
+                        "playwright returned %d candidate(s) for %s in %.1fs",
+                        len(found),
+                        target,
+                        time.monotonic() - started,
+                    )
             if errors and not found:
                 failures.append("{}: {}".format(target, "; ".join(errors)))
-            LOG.info("%d candidate(s) extracted from %s", len(found), target)
+            LOG.info(
+                "%d candidate(s) extracted from %s via %s",
+                len(found),
+                target,
+                method,
+            )
             for candidate in found:
                 if candidate.origin_key in seen:
                     continue
@@ -691,11 +719,21 @@ class TwitterSource:
                 "gallery-dl exited with %d but produced data; continuing",
                 completed.returncode,
             )
-        return parse_gallery_dl_records(
+        candidates = parse_gallery_dl_records(
             completed.stdout or "",
             fallback_source=target,
             include_videos=self.settings.twitter_include_videos,
         )
+        if not candidates:
+            LOG.info(
+                "gallery-dl returned no candidates for %s "
+                "(exit=%d, stdout=%d bytes, stderr=%.200s)",
+                target,
+                completed.returncode,
+                len(completed.stdout or ""),
+                stderr,
+            )
+        return candidates
 
     def _via_playwright(self, target: str) -> list[MediaCandidate]:
         try:
